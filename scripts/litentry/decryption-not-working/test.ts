@@ -1,28 +1,29 @@
-import {cryptoWaitReady} from '@polkadot/util-crypto'
-import {KeyringPair} from '@polkadot/keyring/types'
-import {ApiPromise, Keyring, WsProvider} from '@polkadot/api'
-import {TypeRegistry} from '@polkadot/types'
-import {Metadata} from '@polkadot/types/metadata';
-import {BN, u8aToHex, hexToU8a} from '@polkadot/util'
-import type {KeyObject} from 'crypto'
-import {createPublicKey, publicEncrypt} from 'crypto'
+import { cryptoWaitReady } from '@polkadot/util-crypto'
+import { KeyringPair } from '@polkadot/keyring/types'
+import { ApiPromise, Keyring, WsProvider } from '@polkadot/api'
+import { TypeRegistry, Bytes } from '@polkadot/types'
+import { Metadata } from '@polkadot/types/metadata';
+import { BN, u8aToHex, hexToU8a, u8aToBuffer, u8aToString, compactAddLength, bufferToU8a } from '@polkadot/util'
+import type { KeyObject } from 'crypto'
+import { createPublicKey, publicEncrypt } from 'crypto'
 import * as jose from 'jose'
-import {definitions} from "./type-definitions";
-import {Codec} from "@polkadot/types/types";
+import { definitions } from "./type-definitions";
+import { Codec } from "@polkadot/types/types";
 
 const base58 = require('micro-base58');
 
 const WebSocketAsPromised = require('websocket-as-promised');
 const WebSocket = require('ws');
-const keyring = new Keyring({type: 'sr25519'})
+const keyring = new Keyring({ type: 'sr25519' })
 const NodeRSA = require('node-rsa');
 
 // in order to handle self-signed certificates we need to turn off the validation
 // TODO add self signed certificate ??
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
+
 type WorkerRpcReturnValue = {
-	value: `0x${string}`
+	value: Uint8Array
 	do_watch: boolean
 	status: string
 }
@@ -30,6 +31,12 @@ type WorkerRpcReturnValue = {
 type WorkerRpcReturnString = {
 	vec: string
 }
+
+type RsaPublicKey = {
+	n: Uint8Array,
+	e: Uint8Array
+}
+
 
 type PubicKeyJson = {
 	n: Uint8Array,
@@ -40,12 +47,13 @@ function toBalance(amountInt: number) {
 	return new BN(amountInt).mul(new BN(10).pow(new BN(12)))
 }
 
-async function sendRequest(wsClient: any, request: any, api: ApiPromise): Promise<WorkerRpcReturnValue> {
-	const resp = await wsClient.sendRequest(request, {requestId: 1, timeout: 6000})
-	const resp_json = api.createType("WorkerRpcReturnValue", resp.result).toJSON() as WorkerRpcReturnValue
+async function sendRequest(wsClient: any, request: any, api: ApiPromise) {
+	const resp = await wsClient.sendRequest(request, { requestId: 1, timeout: 6000 })
+	console.log("Immediate resp" + resp.result)
+	const resp_json = api.createType("WorkerRpcReturnValue", resp.result)
+	console.log("WorkerRpcReturnValue" + resp_json)
 	return resp_json
 }
-
 
 export const createTrustedCall = (parachain_api: ApiPromise, trustedCall: [string, string], account: KeyringPair, mrenclave: string, shard: string, nonce: Codec, params: Array<any>) => {
 	const [variant, argType] = trustedCall;
@@ -75,73 +83,108 @@ async function createTransferTrustedCall(parachain_api: ApiPromise, account: Key
 		nonce,
 		[account.address, to, amount]
 	);
-	const trustedOperation = parachain_api.createType('TrustedOperation', {'indirect_call': call})
+	const trustedOperation = parachain_api.createType('TrustedOperation', { 'indirect_call': call })
+	console.log(trustedOperation);
 	return trustedOperation.toU8a()
 }
 
 async function test() {
-	const provider = new WsProvider('ws://integritee-node:9912')
+	const provider = new WsProvider('ws://127.0.0.1:9994')
 	const registry = new TypeRegistry()
 	const parachain_api = await ApiPromise.create({
 		provider, types: definitions
 	})
 	await cryptoWaitReady()
-	const wsp = new WebSocketAsPromised('wss://localhost:2000', {
+	const wsp = new WebSocketAsPromised('wss://127.0.0.1:2094', {
 		createWebSocket: (url: any) => new WebSocket(url),
 		extractMessageData: (event: any) => event, // <- this is important
 		packMessage: (data: any) => JSON.stringify(data),
 		unpackMessage: (data: string) => JSON.parse(data),
-		attachRequestId: (data: any, requestId: string | number) => Object.assign({id: requestId}, data), // attach requestId to message as `id` field
+		attachRequestId: (data: any, requestId: string | number) => Object.assign({ id: requestId }, data), // attach requestId to message as `id` field
 		extractRequestId: (data: any) => data && data.id,                                  // read requestId from message `id` field
 	});
 	await wsp.open()
 
-	let request = {jsonrpc: "2.0", method: "author_getShieldingKey", params: [], id: 1};
-	let respJSON = await sendRequest(wsp, request, parachain_api)
-	const pubKeyHex = parachain_api.createType("WorkerRpcReturnString", respJSON.value).toJSON() as WorkerRpcReturnString
-	let chunk = Buffer.from(pubKeyHex.vec.slice(2), 'hex');
-	const pubKeyJSON = JSON.parse(chunk.toString("utf-8")) as PubicKeyJson
+	let request = { jsonrpc: "2.0", method: "author_getShieldingKey", params: [], id: 1 };
+	let resp = await sendRequest(wsp, request, parachain_api)
+	let respJSON = resp.toJSON()
+	console.log('value:  ' + respJSON.value)
+	const return_value = parachain_api.createType('Vec<u8>', respJSON.value);
+	console.log('value  (first two bytes belong to the type registry) \n  ' + return_value.toU8a());
+	const decoded_string = parachain_api.createType('String', respJSON.value);
+	console.log('value  (first two bytes belong to the type registry) \n  ' + decoded_string);
+	//const pubKeyHex = parachain_api.createType("WorkerRpcReturnString", respJSON.value).toJSON() as WorkerRpcReturnString
+
+	//let chunk = Buffer.from(pubKeyHex.vec.slice(2), 'hex');
+	//console.log(pubKeyHex.vec.slice(2))
+	//console.log(chunk)
+
+	//const keyJson = JSON.parse(respJSON.value.toString("utf-8")) as PubicKeyJson;
+	//const keyJson = JSON.parse(chunk.toString("utf-8")) as PubicKeyJson;
+	//const keyJson = decoded_string.toJSON();
+	//console.log("keyJson n \n" + keyJson.n.toString())
+	const keyJson = JSON.parse(decoded_string.toString().slice(2)) as PubicKeyJson;
+	console.log("keyJson n \n" + keyJson.n)
+	console.log("keyJson e \n" + keyJson.e)
+	keyJson.n = u8aToBuffer(keyJson.n);
+	keyJson.e = u8aToBuffer(keyJson.e);
+	///keyJson.e = Buffer.from(keyJson.e, 'base64');
+
+	console.log("keyJson n \n" + u8aToHex(keyJson.n))
+	console.log("keyJson e \n" + u8aToHex(keyJson.e))
+	//const pubKeyJSON = JSON.parse(chunk.toString("utf-8")) as PubicKeyJson
 
 	// request = {jsonrpc: "2.0", method: "state_getMetadata", params: [], id: 1};
 	// respJSON = await sendRequest(wsp, request, parachain_api)
 	// const metadata = new Metadata(registry, respJSON.value)
 
-	// const key = new NodeRSA();
-	// key.setOptions(
-	// 	{
-	// 		encryptionScheme: {
-	// 			scheme: 'pkcs1_oaep',
-	// 			hash: 'sha256',
-	// 			label: ''
-	// 		}
-	// 	}
-	// );
-	// key.importKey({
-	// 	"n": Buffer.from(pubKeyJSON.n),
-	// 	"e": 16777217
-	// }, 'components-public');
-	// let tmp1 = key.encrypt(u8aToHex(new Uint8Array([1, 2, 3, 4])), 'buffer', 'hex')
+	const key = new NodeRSA();
+	key.setOptions(
+		{
+			encryptionScheme: {
+				scheme: 'pkcs1_oaep',
+				hash: 'sha256',
+				label: ''
+			}
+		}
+	);
+	key.importKey({
+		n: keyJson.n,
+		e: keyJson.e
+	}, 'components-public');
 
-	const pubKeyObj = createPublicKey({
-		key: {
-			"alg": "RSA-OAEP",
-			"kty": "RSA",
-			"use": "enc",
-			n: jose.base64url.encode(Buffer.from(pubKeyJSON.n)),
-			e: jose.base64url.encode(Buffer.from('01000001', 'hex')),
-		},
-		format: "jwk"
-	})
 
-	const alice: KeyringPair = keyring.addFromUri('//Alice', {name: 'Alice'})
-	const bob_stash = keyring.addFromUri('//Bob//stash', {name: 'Bob_stash'})
+	// const pubKeyObj = createPublicKey({
+	// 	key: {
+	// 		"alg": "RSA-OAEP",
+	// 		"kty": "RSA",
+	// 		"use": "enc",
+	// 		n: jose.base64url.encode(keyJson.n),
+	// 		e: jose.base64url.encode(Buffer.from('01000001', 'hex')),
+	// 	},
+	// 	format: "jwk"
+	// })
+
+
+
+	const alice: KeyringPair = keyring.addFromUri('//Alice', { name: 'Alice' })
+	const bob = keyring.addFromUri('//Bob', { name: 'Bob' })
 
 	//could
-	const mrenclave = 'AaYrAiZhVXLrgnWyidns1hPRBF7iozMT5z6eMSzVBVod'
-	const shard = '0x8e515bff464371ef8b6cf7305018d3b4365dca04e8403d516b7e6836eea057b0'
-	const call = await createTransferTrustedCall(parachain_api, alice, bob_stash.address, mrenclave, shard, toBalance(10))
-	const cyphertext = publicEncrypt(pubKeyObj, call)
+	const mrenclave = 'BVRh9Q2S7SB1Gz52UcCE4266nNNagEXkDytdfJzsqjmf'
+	const shard = '0x9bdd0d29ffd9703c8321c53bfbbc5707fe42d17a1181861f64d00da911ce9286'
+	const call = await createTransferTrustedCall(parachain_api, alice, bob.address, mrenclave, shard, toBalance(10))
+	//const cyphertext = publicEncrypt(pubKeyObj, call)
+	console.log("call: \n" + call);
+	const cyphertext = key.encrypt(u8aToBuffer(call))
+	console.log("call encrypted: \n" + cyphertext);
+	const cypherArray = bufferToU8a(cyphertext);
+	console.log("call encrypted: \n" + cypherArray);
+	const cyphertext_vec = parachain_api.createType('Vec<u8>', compactAddLength(cypherArray));
+	console.log("call encrypted: \n" + cyphertext_vec);
 	// const request2 = {jsonrpc: "2.0", method: "test_encrypt", params: Array.prototype.slice.call(cyphertext), id: 1};
+
+
 
 	// const encryptResp = await sendRequest(wsp, {
 	// 	jsonrpc: "2.0",
@@ -149,10 +192,15 @@ async function test() {
 	// 	params: Array.from(call),
 	// 	id: 1
 	// }, parachain_api)
-	console.log(`0x${cyphertext.toString('hex')}`)
+	// console.log(`0x${cyphertext.toString('hex')}`)
+	// await parachain_api.tx.teerex.callWorker({
+	// 	shard: shard,
+	// 	cyphertext: `0x${cyphertext.toString('hex')}`
+	// }).signAndSend(alice)
+
 	await parachain_api.tx.teerex.callWorker({
 		shard: shard,
-		cyphertext: `0x${cyphertext.toString('hex')}`
+		cyphertext: cyphertext_vec
 	}).signAndSend(alice)
 
 

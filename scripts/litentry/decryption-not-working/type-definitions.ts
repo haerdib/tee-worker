@@ -1,9 +1,13 @@
 export const definitions = {
+	RsaPublicKey: {
+		n: "Vec<u8>",
+		e: "Vec<u8>"
+	},
 	WorkerRpcReturnString: {
-		vec: "Bytes"
+		vec: "Vec<u8>"
 	},
 	WorkerRpcReturnValue: {
-		value: 'Bytes',
+		value: 'Vec<u8>',
 		do_watch: 'bool',
 		status: 'DirectRequestStatus',
 	},
